@@ -1,11 +1,12 @@
 package main
 
 import (
-	"github.com/buger/gor/proto"
-	raw "github.com/buger/gor/raw_socket_listener"
 	"log"
 	"net"
 	"time"
+
+	"github.com/buger/gor/proto"
+	raw "github.com/buger/gor/raw_socket_listener"
 )
 
 // RAWInput used for intercepting traffic for given address

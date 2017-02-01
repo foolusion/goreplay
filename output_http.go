@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"io"
+	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/buger/gor/proto"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const initialDynamicWorkers = 10
@@ -182,6 +187,21 @@ func (o *HTTPOutput) Read(data []byte) (int, error) {
 	return len(resp.payload) + len(header), nil
 }
 
+var responseTimes = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	Namespace: "nordstrom",
+	Subsystem: "gor",
+	Name:      "response_time_nanoseconds",
+	Help:      "The response time in nanoseconds of duplicated request made by gor.",
+	Buckets:   prometheus.LinearBuckets(10000000, 10000000, 5),
+}, []string{"status"})
+
+var responseFailures = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: "nordstrom",
+	Subsystem: "gor",
+	Name:      "request_errors_count",
+	Help:      "The number of errors that occur when making the duplicated request.",
+})
+
 func (o *HTTPOutput) sendRequest(client *HTTPClient, request []byte) {
 	meta := payloadMeta(request)
 	if len(meta) < 2 {
@@ -199,8 +219,21 @@ func (o *HTTPOutput) sendRequest(client *HTTPClient, request []byte) {
 	stop := time.Now()
 
 	if err != nil {
+		responseFailures.Inc()
 		Debug("Request error:", err)
 	}
+
+	req, err := http.ReadRequest(bufio.NewReader(bytes.NewBuffer(request)))
+	if err != nil {
+		return
+	}
+
+	r, err := http.ReadResponse(bufio.NewReader(bytes.NewBuffer(resp)), req)
+	if err != nil {
+		return
+	}
+
+	responseTimes.WithLabelValues(strconv.Itoa(r.StatusCode)).Observe(float64(stop.Sub(start)))
 
 	if o.config.TrackResponses {
 		o.responses <- response{resp, uuid, start.UnixNano(), stop.UnixNano() - start.UnixNano()}

@@ -16,6 +16,8 @@ import (
 	"runtime/pprof"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
@@ -33,6 +35,18 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	go func() {
+		prometheus.MustRegister(responseTimes, responseFailures)
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", prometheus.Handler())
+		srv := http.Server{
+			ReadTimeout:  50 * time.Millisecond,
+			WriteTimeout: 50 * time.Millisecond,
+			IdleTimeout:  30 * time.Second,
+			Handler:      mux,
+		}
+		log.Println(srv.ListenAndServe())
+	}()
 	// // Don't exit on panic
 	// defer func() {
 	// 	if r := recover(); r != nil {
