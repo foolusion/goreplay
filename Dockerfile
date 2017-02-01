@@ -1,4 +1,4 @@
-FROM golang:latest
+FROM golang:1.8
 
 RUN apt-get update && apt-get install ruby vim-common -y
 
