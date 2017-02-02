@@ -40,6 +40,7 @@ func main() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", prometheus.Handler())
 		srv := http.Server{
+			Addr:         ":8000",
 			ReadTimeout:  50 * time.Millisecond,
 			WriteTimeout: 50 * time.Millisecond,
 			IdleTimeout:  30 * time.Second,

@@ -3,8 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
+	"io/ioutil"
+	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -192,7 +196,7 @@ var responseTimes = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Subsystem: "gor",
 	Name:      "response_time_nanoseconds",
 	Help:      "The response time in nanoseconds of duplicated request made by gor.",
-	Buckets:   prometheus.LinearBuckets(10000000, 10000000, 5),
+	Buckets:   prometheus.LinearBuckets(10000000, 10000000, 6),
 }, []string{"status"})
 
 var responseFailures = prometheus.NewCounter(prometheus.CounterOpts{
@@ -207,40 +211,51 @@ func (o *HTTPOutput) sendRequest(client *HTTPClient, request []byte) {
 	if len(meta) < 2 {
 		return
 	}
-	uuid := meta[1]
 
 	body := payloadBody(request)
 	if !proto.IsHTTPPayload(body) {
 		return
 	}
 
-	start := time.Now()
-	resp, err := client.Send(body)
-	stop := time.Now()
+	// build the request
+	req, err := http.ReadRequest(bufio.NewReader(bytes.NewBuffer(body)))
+	if err != nil {
+		log.Printf("could not read request: %s", err.Error())
+		return
+	}
+	reqURL, err := url.ParseRequestURI(req.RequestURI)
+	if err != nil {
+		log.Printf("could not parse request uri: %s", err.Error())
+		return
+	}
+	req.RequestURI = ""
+	reqURL.Host = Settings.outputHTTP[0]
+	reqURL.Scheme = "http"
+	req.URL = reqURL
+	if err != nil {
+		log.Printf("could not parse request url: %s", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
 
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	rDuration := time.Since(start)
 	if err != nil {
 		responseFailures.Inc()
-		Debug("Request error:", err)
-	}
-
-	req, err := http.ReadRequest(bufio.NewReader(bytes.NewBuffer(request)))
-	if err != nil {
+		log.Printf("could not complete do request: %s", err.Error())
 		return
 	}
-
-	r, err := http.ReadResponse(bufio.NewReader(bytes.NewBuffer(resp)), req)
+	defer resp.Body.Close()
+	_, err = io.Copy(ioutil.Discard, resp.Body)
 	if err != nil {
-		return
+		log.Printf("error reading resp body: %s", err.Error())
 	}
 
-	responseTimes.WithLabelValues(strconv.Itoa(r.StatusCode)).Observe(float64(stop.Sub(start)))
-
-	if o.config.TrackResponses {
-		o.responses <- response{resp, uuid, start.UnixNano(), stop.UnixNano() - start.UnixNano()}
-	}
-
-	if o.elasticSearch != nil {
-		o.elasticSearch.ResponseAnalyze(request, resp, start, stop)
+	if req != nil && req.URL.Path == "/" {
+		responseTimes.WithLabelValues(strconv.Itoa(resp.StatusCode)).Observe(float64(rDuration))
 	}
 }
 
