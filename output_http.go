@@ -199,12 +199,12 @@ var responseTimes = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets:   prometheus.LinearBuckets(10000000, 10000000, 6),
 }, []string{"status"})
 
-var responseFailures = prometheus.NewCounter(prometheus.CounterOpts{
+var responseFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "nordstrom",
 	Subsystem: "gor",
 	Name:      "request_errors_count",
 	Help:      "The number of errors that occur when making the duplicated request.",
-})
+}, []string{"error_type"})
 
 func (o *HTTPOutput) sendRequest(client *HTTPClient, request []byte) {
 	meta := payloadMeta(request)
@@ -227,6 +227,8 @@ func (o *HTTPOutput) sendRequest(client *HTTPClient, request []byte) {
 	if err != nil {
 		log.Printf("could not parse request uri: %s", err.Error())
 		return
+	} else if reqURL.Path != "/" {
+		return
 	}
 	req.RequestURI = ""
 	reqURL.Host = Settings.outputHTTP[0]
@@ -236,26 +238,27 @@ func (o *HTTPOutput) sendRequest(client *HTTPClient, request []byte) {
 		log.Printf("could not parse request url: %s", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	req = req.WithContext(ctx)
 
 	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	rDuration := time.Since(start)
-	if err != nil {
-		responseFailures.Inc()
-		log.Printf("could not complete do request: %s", err.Error())
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		responseFailures.WithLabelValues("timeout").Inc()
+		return
+	} else if err != nil {
+		responseFailures.WithLabelValues("other").Inc()
+		log.Printf("could not do request: %s", err.Error())
 		return
 	}
 	defer resp.Body.Close()
+	responseTimes.WithLabelValues(strconv.Itoa(resp.StatusCode)).Observe(float64(rDuration))
 	_, err = io.Copy(ioutil.Discard, resp.Body)
 	if err != nil {
 		log.Printf("error reading resp body: %s", err.Error())
-	}
-
-	if req != nil && req.URL.Path == "/" {
-		responseTimes.WithLabelValues(strconv.Itoa(resp.StatusCode)).Observe(float64(rDuration))
+		return
 	}
 }
 
